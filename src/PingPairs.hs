@@ -2,7 +2,6 @@
 module Main where
 
 import Control.Applicative ((<$>))
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, mapConcurrently, wait)
 import Control.Exception (bracket)
 import Control.Monad (forever)
@@ -93,7 +92,7 @@ pingClient ip port delays (me, server) =
       sendWithSelf gw pid $ Signal PingRequestSig timestamp
       (_, Signal PingReplySig lbs) <- receive gw $ Sel [PingReplySig]
       rtt <- captureRtt lbs
-      threadDelay t
+      Nothing <- receiveWithTimeout gw (Timeout (fromIntegral t)) AnySignal
       go gw pid ts (rtt:result)
 
 connectService :: Gateway -> String -> IO Pid
