@@ -37,41 +37,50 @@ main = do
       
 runServer :: GWAddress -> IO ()
 runServer gwAddress@(ip, port) = 
-  bracket (create "server" ip (Service port))
-          destroy $ \gw ->
-    forever $ do
-      (from, Signal SetupRequestSig lbs) <- receive gw $ Sel [SetupRequestSig]
-      let numServers = decodeSetupRequest lbs
-          names      = map ("server" #) [1..numServers]
-      servers <- mapM (async . pingServer gwAddress) names
-      sendWithSelf gw from $ Signal SetupReplySig (encodeSetupReply names)
-      mapM_ wait servers
+  bracket (create "server" ip (Service port)) destroy handleSetupRequest  
+  where
+    handleSetupRequest :: Gateway -> IO ()
+    handleSetupRequest gw =
+      forever $ do
+        (from, Signal SetupRequestSig lbs) <- receive gw $ Sel [SetupRequestSig]
+        let numServers = decodeSetupRequest lbs
+            names      = map ("server" #) [1..numServers]
+        servers <- mapM (async . pingServer gwAddress) names
+        sendWithSelf gw from $ Signal SetupReplySig (encodeSetupReply names)
+        mapM_ wait servers
 
 pingServer :: GWAddress -> String -> IO ()
 pingServer (ip, port) name =
-  bracket (create name ip (Service port)) destroy go
+  bracket (create name ip (Service port)) destroy handleSignals
   where
-    go :: Gateway -> IO ()
-    go gw = do
+    handleSignals :: Gateway -> IO ()
+    handleSignals gw = do
       (from, signal) <- receive gw $ Sel [PingRequestSig, ByeSig]
       case signal of
         Signal PingRequestSig lbs -> do
           sendWithSelf gw from $ Signal PingReplySig lbs
-          go gw
+          handleSignals gw
         _                         -> return ()
 
-runClient :: GWAddress -> Int -> DelaySpecList 
-          -> IO [[NominalDiffTime]]
+runClient :: GWAddress -> Int -> DelaySpecList -> IO [[NominalDiffTime]]
 runClient gwAddress@(ip, port) pairs delays = 
-  bracket (create "client" ip (Service port))
-          destroy $ \gw -> do
-    pid <- connectService gw "server"
-    sendWithSelf gw pid $ Signal SetupRequestSig (encodeSetupRequest pairs)
-    (_, Signal SetupReplySig lbs) <- receive gw $ Sel [SetupReplySig]
-    let serverNames = decodeSetupReply lbs
-        clientNames = map ("client" #) [1..pairs]
-        delays'     = extractDelaySpecs delays
-    mapConcurrently (pingClient gwAddress delays') $ zip clientNames serverNames
+  bracket (create "client" ip (Service port)) destroy go
+  where
+    go :: Gateway -> IO [[NominalDiffTime]]
+    go gw = do
+      serverNames <- serverNamesFromSetup gw
+      let clientNames = map ("client" #) [1..pairs]
+          delays'     = extractDelaySpecs delays
+      mapConcurrently (pingClient gwAddress delays') 
+                      $ zip clientNames serverNames
+    
+    serverNamesFromSetup :: Gateway -> IO [String]
+    serverNamesFromSetup gw = do
+      pid <- connectService gw "server"
+      sendWithSelf gw pid $ Signal SetupRequestSig (encodeSetupRequest pairs)
+      (_, Signal SetupReplySig lbs) <- receive gw $ Sel [SetupReplySig]
+      return $ decodeSetupReply lbs
+      
     
 pingClient :: GWAddress -> [Int] -> (String, String) 
            -> IO [NominalDiffTime]
@@ -85,6 +94,7 @@ pingClient (ip, port) delays (me, server) =
     go gw pid [] result = do
       sendWithSelf gw pid $ NumericSignal ByeSig
       return $ reverse result
+      
     go gw pid (t:ts) result = do
       timestamp <- encodedTimestamp
       sendWithSelf gw pid $ Signal PingRequestSig timestamp
