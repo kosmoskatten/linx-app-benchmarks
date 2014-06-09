@@ -13,6 +13,7 @@ import System.Environment (getArgs)
 import qualified Data.ByteString.Lazy as LBS
 
 type DelaySpecList = [(Int, Int)]
+type GWAddress = (HostName, String)
 
 #define HuntSig (SigNo 1)
 #define SetupRequestSig (SigNo 10)
@@ -26,31 +27,28 @@ main = do
   args <- getArgs
   case args of
     ["server", gateway, port]                -> 
-      runServer gateway port
+      runServer (gateway, port)
     ["client", gateway, port, pairs, delays] -> do
-      result <- runClient gateway port (read pairs) (read delays)
+      result <- runClient (gateway, port) (read pairs) (read delays)
       print result
     _                                        -> do
       putStrLn "Bla bla bla"
       putStrLn "Bla bla bla"
       
-runServer :: HostName -> String -> IO ()
-runServer ip port = 
+runServer :: GWAddress -> IO ()
+runServer gwAddress@(ip, port) = 
   bracket (create "server" ip (Service port))
           destroy $ \gw ->
     forever $ do
       (from, Signal SetupRequestSig lbs) <- receive gw $ Sel [SetupRequestSig]
       let numServers = decodeSetupRequest lbs
-          names      = serviceNames numServers
-      servers <- mapM (async . pingServer ip port) names
+          names      = map ("server" #) [1..numServers]
+      servers <- mapM (async . pingServer gwAddress) names
       sendWithSelf gw from $ Signal SetupReplySig (encodeSetupReply names)
       mapM_ wait servers
 
-serviceNames :: Int -> [String]
-serviceNames n = map ("server" #) [1..n]
-
-pingServer :: HostName -> String -> String -> IO ()
-pingServer ip port name =
+pingServer :: GWAddress -> String -> IO ()
+pingServer (ip, port) name =
   bracket (create name ip (Service port)) destroy go
   where
     go :: Gateway -> IO ()
@@ -62,22 +60,22 @@ pingServer ip port name =
           go gw
         _                         -> return ()
 
-runClient :: HostName -> String -> Int -> DelaySpecList 
+runClient :: GWAddress -> Int -> DelaySpecList 
           -> IO [[NominalDiffTime]]
-runClient ip port pairs delays = 
+runClient gwAddress@(ip, port) pairs delays = 
   bracket (create "client" ip (Service port))
           destroy $ \gw -> do
     pid <- connectService gw "server"
     sendWithSelf gw pid $ Signal SetupRequestSig (encodeSetupRequest pairs)
     (_, Signal SetupReplySig lbs) <- receive gw $ Sel [SetupReplySig]
-    let servers = decodeSetupReply lbs
-        clients = map ("client" #) [1..pairs]
-        delays' = extractDelaySpecs delays
-    mapConcurrently (pingClient ip port delays') $ zip clients servers
+    let serverNames = decodeSetupReply lbs
+        clientNames = map ("client" #) [1..pairs]
+        delays'     = extractDelaySpecs delays
+    mapConcurrently (pingClient gwAddress delays') $ zip clientNames serverNames
     
-pingClient :: HostName -> String -> [Int] -> (String, String) 
+pingClient :: GWAddress -> [Int] -> (String, String) 
            -> IO [NominalDiffTime]
-pingClient ip port delays (me, server) =
+pingClient (ip, port) delays (me, server) =
   bracket (create me ip (Service port))
           destroy $ \gw -> do
     pid <- connectService gw server
@@ -113,10 +111,10 @@ encodeSetupReply :: [String] -> LBS.ByteString
 encodeSetupReply = encode
 
 extractDelaySpecs :: DelaySpecList -> [Int]
-extractDelaySpecs = concat . map (uncurry replicate)
+extractDelaySpecs = concatMap (uncurry replicate)
 
 (#) :: String -> Int -> String
-(#) service num = service ++ (show num)
+(#) service num = service ++ show num
 
 encodedTimestamp :: IO LBS.ByteString
 encodedTimestamp = encode . show <$> getCurrentTime
