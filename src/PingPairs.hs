@@ -8,6 +8,7 @@ import Control.Monad (forever)
 import Data.Binary
 import Data.Time (getCurrentTime, diffUTCTime)
 import Data.Time.Clock (NominalDiffTime)
+import Data.List (transpose, zip4, unzip4)
 import Network.Linx.Gateway
 import System.Environment (getArgs)
 import qualified Data.ByteString.Lazy as LBS
@@ -29,12 +30,42 @@ main = do
     ["server", gateway, port]                -> 
       runServer (gateway, port)
     ["client", gateway, port, pairs, delays] -> do
-      result <- runClient (gateway, port) (read pairs) (read delays)
-      print result
+      let delays' = extractDelaySpecs $ read delays
+      result <- calcResult delays' 
+                  <$> runClient (gateway, port) (read pairs) delays'
+      presentResult result
     _                                        -> do
       putStrLn "Bla bla bla"
       putStrLn "Bla bla bla"
       
+presentResult :: [(Int, NominalDiffTime, NominalDiffTime, NominalDiffTime)] 
+              -> IO ()
+presentResult xs = do 
+  print xs
+  let (l1, l2, l3, l4) = unzip4 xs
+  writeFile "result.csv" (toCSV "Tick" l1)
+  appendFile "result.csv" (toCSV "Min" l2)
+  appendFile "result.csv" (toCSV "Average" l3)
+  appendFile "result.csv" (toCSV "Max" l4)
+  
+toCSV :: Show a => String -> [a] -> String
+toCSV label xs = label ++ "," ++ (toCSV' xs)
+  where
+    toCSV' :: Show a => [a] -> String
+    toCSV' [] = "\n"
+    toCSV' (x:[]) = (show x) ++ "\n"
+    toCSV' (x:xs) = (show x) ++ "," ++ (toCSV' xs)
+
+calcResult :: [Int] -> [[NominalDiffTime]] 
+           -> [(Int, NominalDiffTime, NominalDiffTime, NominalDiffTime)]
+calcResult ts xs =
+  let xs' = transpose xs
+  in zip4 ts (map minimum xs') (map mean xs') (map maximum xs')
+  where
+    mean :: [NominalDiffTime] -> NominalDiffTime
+    mean [] = error "Should not happen"
+    mean xs = sum xs / (fromIntegral $ length xs)
+
 runServer :: GWAddress -> IO ()
 runServer gwAddress@(ip, port) = 
   bracket (create "server" ip (Service port)) destroy handleSetupRequest  
@@ -62,7 +93,7 @@ pingServer (ip, port) name =
           handleSignals gw
         _                         -> return ()
 
-runClient :: GWAddress -> Int -> DelaySpecList -> IO [[NominalDiffTime]]
+runClient :: GWAddress -> Int -> [Int] -> IO [[NominalDiffTime]]
 runClient gwAddress@(ip, port) pairs delays = 
   bracket (create "client" ip (Service port)) destroy go
   where
@@ -70,8 +101,7 @@ runClient gwAddress@(ip, port) pairs delays =
     go gw = do
       serverNames <- serverNamesFromSetup gw
       let clientNames = map ("client" #) [1..pairs]
-          delays'     = extractDelaySpecs delays
-      mapConcurrently (pingClient gwAddress delays') 
+      mapConcurrently (pingClient gwAddress delays) 
                       $ zip clientNames serverNames
     
     serverNamesFromSetup :: Gateway -> IO [String]
