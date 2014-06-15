@@ -3,7 +3,6 @@ module Main where
 
 import Control.Applicative ((<$>))
 import Control.Concurrent.Async (async, wait, mapConcurrently)
-import Control.Exception (bracket)
 import Control.Monad (forever)
 import Data.Binary
 import Data.Time (getCurrentTime)
@@ -13,7 +12,7 @@ import System.Environment (getArgs)
 import qualified Data.ByteString.Lazy as LBS
 import GHC.Int
 
-type GWAddress = (HostName, String)
+type GWAddress = (HostName, PortID)
 
 #define HuntSig (SigNo 1)
 #define SetupRequestSig (SigNo 10)
@@ -28,15 +27,15 @@ main = do
   args <- getArgs
   case args of
     ["server", gateway, port]                 -> 
-      runServer (gateway, port)
+      runServer (gateway, Service port)
     ["client", gateway, port, pairs, sigSize] ->
-      print =<< runClient (gateway, port) (read pairs) (read sigSize)
+      print =<< runClient (gateway, Service port) (read pairs) (read sigSize)
     _                                         ->
       putStrLn "Bla bla"
             
 runServer :: GWAddress -> IO ()
 runServer gwAddress@(ip, port) = 
-  bracket (create "server" ip (Service port)) destroy handleSetupRequest  
+  withGateway "server" ip port handleSetupRequest
   where
     handleSetupRequest :: Gateway -> IO ()
     handleSetupRequest gw =
@@ -50,7 +49,7 @@ runServer gwAddress@(ip, port) =
         
 bulkServer :: GWAddress -> String -> IO ()
 bulkServer (ip, port) name =
-  bracket (create name ip (Service port)) destroy handleBulkSession
+  withGateway name ip port handleBulkSession
   where
     handleBulkSession :: Gateway -> IO ()
     handleBulkSession gw = do
@@ -71,7 +70,7 @@ bulkServer (ip, port) name =
 
 runClient :: GWAddress -> Int -> Int64 -> IO [NominalDiffTime]
 runClient gwAddress@(ip, port) pairs sigSize = 
-  bracket (create "client" ip (Service port)) destroy go
+  withGateway "client" ip port go
   where
     go :: Gateway -> IO [NominalDiffTime]
     go gw = do
@@ -90,7 +89,7 @@ runClient gwAddress@(ip, port) pairs sigSize =
 
 bulkClient :: GWAddress -> Int64 -> (String, String) -> IO NominalDiffTime
 bulkClient (ip, port) sigSize (me, server) =
-  bracket (create me ip (Service port)) destroy handleBulkSession
+  withGateway me ip port handleBulkSession
   where
     handleBulkSession :: Gateway -> IO NominalDiffTime
     handleBulkSession gw = do

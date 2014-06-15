@@ -3,7 +3,6 @@ module Main where
 
 import Control.Applicative ((<$>))
 import Control.Concurrent.Async (async, mapConcurrently, wait)
-import Control.Exception (bracket)
 import Control.Monad (forever)
 import Data.Binary
 import Data.Time (getCurrentTime, diffUTCTime)
@@ -14,7 +13,7 @@ import System.Environment (getArgs)
 import qualified Data.ByteString.Lazy as LBS
 
 type DelaySpecList = [(Int, Int)]
-type GWAddress = (HostName, String)
+type GWAddress = (HostName, PortID)
 
 #define HuntSig (SigNo 1)
 #define SetupRequestSig (SigNo 10)
@@ -28,11 +27,11 @@ main = do
   args <- getArgs
   case args of
     ["server", gateway, port]                -> 
-      runServer (gateway, port)
+      runServer (gateway, Service port)
     ["client", gateway, port, pairs, delays] -> do
       let delays' = extractDelaySpecs $ read delays
       result <- calcResult delays' 
-                  <$> runClient (gateway, port) (read pairs) delays'
+                  <$> runClient (gateway, Service port) (read pairs) delays'
       presentResult result
     _                                        -> do
       putStrLn "Bla bla bla"
@@ -68,7 +67,7 @@ calcResult ts xs =
 
 runServer :: GWAddress -> IO ()
 runServer gwAddress@(ip, port) = 
-  bracket (create "server" ip (Service port)) destroy handleSetupRequest  
+  withGateway "server" ip port handleSetupRequest
   where
     handleSetupRequest :: Gateway -> IO ()
     handleSetupRequest gw =
@@ -82,7 +81,7 @@ runServer gwAddress@(ip, port) =
 
 pingServer :: GWAddress -> String -> IO ()
 pingServer (ip, port) name =
-  bracket (create name ip (Service port)) destroy handleSignals
+  withGateway name ip port handleSignals
   where
     handleSignals :: Gateway -> IO ()
     handleSignals gw = do
@@ -95,7 +94,7 @@ pingServer (ip, port) name =
 
 runClient :: GWAddress -> Int -> [Int] -> IO [[NominalDiffTime]]
 runClient gwAddress@(ip, port) pairs delays = 
-  bracket (create "client" ip (Service port)) destroy go
+  withGateway "client" ip port go
   where
     go :: Gateway -> IO [[NominalDiffTime]]
     go gw = do
@@ -109,14 +108,12 @@ runClient gwAddress@(ip, port) pairs delays =
       pid <- connectService gw "server"
       sendWithSelf gw pid $ Signal SetupRequestSig (encodeSetupRequest pairs)
       (_, Signal SetupReplySig lbs) <- receive gw $ Sel [SetupReplySig]
-      return $ decodeSetupReply lbs
-      
+      return $ decodeSetupReply lbs      
     
 pingClient :: GWAddress -> [Int] -> (String, String) 
            -> IO [NominalDiffTime]
 pingClient (ip, port) delays (me, server) =
-  bracket (create me ip (Service port))
-          destroy $ \gw -> do
+  withGateway me ip port $ \gw -> do
     pid <- connectService gw server
     go gw pid delays []
   where
